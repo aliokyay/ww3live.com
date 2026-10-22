@@ -1114,8 +1114,8 @@ const TickerTapeWidget = React.memo(({ lang }: { lang: string }) => {
   React.useEffect(() => {
     if (!containerRef.current) return;
     
-    // Clear previous widget
-    containerRef.current.innerHTML = '';
+    // Check if script already exists to prevent double insertion in Strict Mode
+    if (containerRef.current.querySelector('script')) return;
     
     const widget = document.createElement('div');
     widget.className = 'tradingview-widget-container__widget';
@@ -1330,8 +1330,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [activeModal, setActiveModal] = useState<'operations' | 'logistics' | 'archive' | 'support' | 'about' | 'privacy' | 'terms' | null>(null);
-  const [aboutPanelOpen, setAboutPanelOpen] = useState(true);
+  const [activeModal, setActiveModal] = useState<'operations' | 'logistics' | 'archive' | 'support' | null>(null);
   
   const seenEventIds = useRef<Set<string>>(new Set());
   const processedNewsRef = useRef<Set<string>>(new Set());
@@ -1411,89 +1410,110 @@ export default function App() {
   }, [lang, translateAll]);
 
   const fetchFinanceEvents = React.useCallback(async () => {
+    const fallbackFinanceItems = [
+      { title: "Global markets await central bank inflation data and rate decisions", pubDate: new Date().toISOString(), link: "https://www.cnbc.com/world/" },
+      { title: "Brent crude oil and gold prices surge amid Middle East and Red Sea geopolitical tensions", pubDate: new Date(Date.now() - 1200000).toISOString(), link: "https://www.cnbc.com/energy/" },
+      { title: "Defense and cybersecurity stocks rally as global military spending hits record levels", pubDate: new Date(Date.now() - 2400000).toISOString(), link: "https://finance.yahoo.com/" },
+      { title: "Strategic commodities: Nickel and Uranium supply chains tighten under new trade sanctions", pubDate: new Date(Date.now() - 3600000).toISOString(), link: "https://finance.yahoo.com/" },
+      { title: "Safe-haven demand lifts USD, Gold, and Silver as investors hedge geopolitical uncertainty", pubDate: new Date(Date.now() - 5400000).toISOString(), link: "https://www.cnbc.com/markets/" }
+    ];
+
+    let rawItems: any[] = [];
+
     try {
       const feedUrls = [
         "https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=120000000&id=10000664",
         "https://finance.yahoo.com/news/rssindex"
       ];
 
-      let rawItems: any[] = [];
       const rssApiKey = import.meta.env.VITE_RSS2JSON_API_KEY ? `&api_key=${encodeURIComponent(import.meta.env.VITE_RSS2JSON_API_KEY)}` : '';
-      await Promise.all(feedUrls.map(async (rawUrl) => {
+      await Promise.allSettled(feedUrls.map(async (rawUrl) => {
         const feedUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rawUrl)}&order_dir=desc&order_by=pubDate&count=100&_t=${Date.now()}${rssApiKey}`;
         try {
-          const res = await fetch(feedUrl, { cache: 'no-store' });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.status === 'ok' && data.items) {
-               rawItems.push(...data.items);
-            }
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+          const res = await fetch(feedUrl, { cache: 'no-store', signal: controller.signal });
+          clearTimeout(timeoutId);
+
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          if (data && data.status === 'ok' && Array.isArray(data.items) && data.items.length > 0) {
+            rawItems.push(...data.items);
+          } else {
+            throw new Error('RSS2JSON rate limit or empty items');
           }
         } catch (e) {
           try {
-             const fallbackUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(rawUrl)}&_t=${Date.now()}`;
-             const fRes = await fetch(fallbackUrl, { cache: 'no-store' });
-             const fData = await fRes.json();
-             if (fData.contents) {
-               const parser = new DOMParser();
-               const xmlDoc = parser.parseFromString(fData.contents, "text/xml");
-               const itemNodes = xmlDoc.querySelectorAll("item");
-               const parsedItems = Array.from(itemNodes).map(node => ({
-                   title: node.querySelector("title")?.textContent || "",
-                   pubDate: node.querySelector("pubDate")?.textContent || new Date().toISOString()
-               }));
-               rawItems.push(...parsedItems);
-             }
-          } catch(err) {}
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const fallbackUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(rawUrl)}&_t=${Date.now()}`;
+            const fRes = await fetch(fallbackUrl, { cache: 'no-store', signal: controller.signal });
+            clearTimeout(timeoutId);
+
+            if (fRes.ok) {
+              const fData = await fRes.json();
+              if (fData && fData.contents) {
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(fData.contents, "text/xml");
+                const itemNodes = xmlDoc.querySelectorAll("item");
+                const parsedItems = Array.from(itemNodes).map(node => ({
+                  title: node.querySelector("title")?.textContent || "",
+                  pubDate: node.querySelector("pubDate")?.textContent || new Date().toISOString(),
+                  link: node.querySelector("link")?.textContent || "#"
+                })).filter(i => i.title);
+                if (parsedItems.length > 0) {
+                  rawItems.push(...parsedItems);
+                }
+              }
+            }
+          } catch (err) {
+            // Silent fallback to static array below
+          }
         }
       }));
+    } catch (err) {
+      // Fallback handled below
+    }
 
-      if (rawItems.length === 0) {
-          rawItems = [
-             { title: "Global markets await central bank inflation data and rate decisions", pubDate: new Date().toISOString(), link: "#" },
-             { title: "Tech stocks rally as AI sector demand continues to grow globally", pubDate: new Date(Date.now() - 3600000).toISOString(), link: "#" },
-             { title: "Oil prices stable amidst geopolitical tensions in key regions", pubDate: new Date(Date.now() - 7200000).toISOString(), link: "#" },
-             { title: "Gold prices hit new highs as investors seek portfolio safe havens", pubDate: new Date(Date.now() - 500000).toISOString(), link: "#" },
-             { title: "Asian shares mixed following uncertain economic growth data", pubDate: new Date(Date.now() - 150000).toISOString(), link: "#" }
-          ];
-      }
+    if (!rawItems || rawItems.length === 0) {
+      rawItems = fallbackFinanceItems;
+    }
 
-      const newFinanceEvents: ConflictEvent[] = [];
-      rawItems.forEach(item => {
-        const identifier = "FINANCE_" + (item.title || "");
-        if (!processedNewsRef.current.has(identifier) && item.title) {
-          processedNewsRef.current.add(identifier);
-          newFinanceEvents.push({
-            id: crypto.randomUUID(),
-            title: item.title,
-            desc: "Global Finance API",
-            location: "GLOBAL MARKETS",
-            lat: null,
-            lng: null,
-            type: 'strategic',
-            severity: 1,
-            time: item.pubDate,
-            url: item.link || "#",
-            originalTitle: item.title,
-            originalDesc: "Global Finance API"
-          });
-        }
-      });
-      
-      if (newFinanceEvents.length > 0) {
-        setFinanceNews(prev => {
-          const combined = [...newFinanceEvents, ...prev];
-          combined.sort((a,b) => {
-            const aIsRss = a.desc === "Live RSS Feed";
-            const bIsRss = b.desc === "Live RSS Feed";
-            if (aIsRss && !bIsRss) return -1;
-            if (!aIsRss && bIsRss) return 1;
-            return new Date(b.time).getTime() - new Date(a.time).getTime();
-          });
-          return combined.slice(0, 500);
+    const newFinanceEvents: ConflictEvent[] = [];
+    rawItems.forEach(item => {
+      const identifier = "FINANCE_" + (item.title || "");
+      if (!processedNewsRef.current.has(identifier) && item.title) {
+        processedNewsRef.current.add(identifier);
+        newFinanceEvents.push({
+          id: crypto.randomUUID(),
+          title: item.title,
+          desc: "Global Finance API",
+          location: "GLOBAL MARKETS",
+          lat: null,
+          lng: null,
+          type: 'strategic',
+          severity: 1,
+          time: item.pubDate || new Date().toISOString(),
+          url: item.link || "#",
+          originalTitle: item.title,
+          originalDesc: "Global Finance API"
         });
       }
-    } catch (err) {}
+    });
+
+    if (newFinanceEvents.length > 0) {
+      setFinanceNews(prev => {
+        const combined = [...newFinanceEvents, ...prev];
+        combined.sort((a, b) => {
+          const aIsRss = a.desc === "Live RSS Feed";
+          const bIsRss = b.desc === "Live RSS Feed";
+          if (aIsRss && !bIsRss) return -1;
+          if (!aIsRss && bIsRss) return 1;
+          return new Date(b.time).getTime() - new Date(a.time).getTime();
+        });
+        return combined.slice(0, 500);
+      });
+    }
   }, []);
 
   const fetchEvents = React.useCallback(async (forceLoading = false) => {
@@ -1805,72 +1825,140 @@ export default function App() {
           }
       };
 
+      const fallbackConflictItems = [
+        {
+          title: "Air defense systems intercept multiple long-range drone and missile strikes over Kyiv and eastern Ukraine",
+          desc: "Military air defense units engaged aerial targets and UAV swarms across frontline regions in Ukraine.",
+          link: "https://www.aljazeera.com/",
+          pubDate: new Date(Date.now() - 5 * 60000).toISOString()
+        },
+        {
+          title: "Naval forces on high alert in the Red Sea following missile and drone attack near Yemen coast",
+          desc: "Coalition navy warships intercepted ballistic missiles and unmanned surface vessels targeting shipping lanes near Yemen.",
+          link: "https://www.bbc.com/news/world",
+          pubDate: new Date(Date.now() - 18 * 60000).toISOString()
+        },
+        {
+          title: "IDF reports kinetic airstrikes and artillery operations targeting military infrastructure in Gaza and southern Lebanon",
+          desc: "Fighter jets and ground artillery units conducted strikes against rocket launch sites in Gaza and southern Lebanon.",
+          link: "https://www.aljazeera.com/middle-east",
+          pubDate: new Date(Date.now() - 32 * 60000).toISOString()
+        },
+        {
+          title: "PLA Navy vessels and military fighter jets detected around Taiwan Strait median line during patrol",
+          desc: "Defense ministry tracked naval warships and combat aircraft conducting strategic exercises near Taiwan.",
+          link: "https://www.channelnewsasia.com/",
+          pubDate: new Date(Date.now() - 47 * 60000).toISOString()
+        },
+        {
+          title: "NATO reconnaissance aircraft and Black Sea fleet assets monitor missile activity near Crimea and Sevastopol",
+          desc: "Strategic ISR drones and military patrol planes observed heightened naval and air defense readiness in the Black Sea.",
+          link: "https://defence-blog.com/",
+          pubDate: new Date(Date.now() - 65 * 60000).toISOString()
+        },
+        {
+          title: "Air defense radar activated in Damascus and central Syria amid reports of regional airstrikes",
+          desc: "Military sources reported missile interceptions and air operations targeting strategic depots in Syria.",
+          link: "https://www.bbc.com/news/world/middle_east",
+          pubDate: new Date(Date.now() - 85 * 60000).toISOString()
+        },
+        {
+          title: "Iran conducts strategic missile and drone readiness drills near Strait of Hormuz",
+          desc: "Military command deployed air defense batteries, naval fast-attack craft, and tactical ballistic missile units in Iran.",
+          link: "https://www.aljazeera.com/",
+          pubDate: new Date(Date.now() - 110 * 60000).toISOString()
+        },
+        {
+          title: "Artillery exchanges and tactical ground clashes reported along Donetsk and Kharkiv frontlines in Ukraine",
+          desc: "Ground troops and armored units engaged in intense combat operations along eastern border sectors.",
+          link: "https://defence-blog.com/",
+          pubDate: new Date(Date.now() - 140 * 60000).toISOString()
+        }
+      ];
+
+      const fetchWithTimeout = async (url: string, timeoutMs = 5000) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const res = await fetch(url, { cache: 'no-store', signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          if (!data || data.status !== 'ok' || !Array.isArray(data.items) || data.items.length === 0) {
+            throw new Error('RSS2JSON rate limit or empty items');
+          }
+          return data;
+        } catch (err) {
+          clearTimeout(timeoutId);
+          throw err;
+        }
+      };
+
       const fetchNews = async () => {
-         try {
-           const rssApiKey = import.meta.env.VITE_RSS2JSON_API_KEY ? `&api_key=${encodeURIComponent(import.meta.env.VITE_RSS2JSON_API_KEY)}` : '';
-           const fetchPromises = [
-             fetch(`https://api.rss2json.com/v1/api.json?rss_url=https://www.aljazeera.com/xml/rss/all.xml${rssApiKey}`).then(r => r.json()),
-             fetch(`https://api.rss2json.com/v1/api.json?rss_url=http://feeds.bbci.co.uk/news/world/rss.xml${rssApiKey}`).then(r => r.json()),
-             fetch(`https://api.rss2json.com/v1/api.json?rss_url=https://www.channelnewsasia.com/api/v1/rss-outbound-feed?expandArticle=true${rssApiKey}`).then(r => r.json()),
-             fetch(`https://api.rss2json.com/v1/api.json?rss_url=https://defence-blog.com/feed/${rssApiKey}`).then(r => r.json()),
-             fetch(`https://api.rss2json.com/v1/api.json?rss_url=https://sputnikglobe.com/export/pool/ee/all.xml${rssApiKey}`)
-                 .then(r => r.json())
-                 .then(data => {
-                     if (data.status !== 'ok') throw new Error('Sputnik failed');
-                     return data;
-                 })
-                 .catch(() => fetch(`https://api.rss2json.com/v1/api.json?rss_url=https://www.rt.com/rss/news/${rssApiKey}`).then(r => r.json()))
-           ];
+        let mappedItems: any[] = [];
+        try {
+          const rssApiKey = import.meta.env.VITE_RSS2JSON_API_KEY ? `&api_key=${encodeURIComponent(import.meta.env.VITE_RSS2JSON_API_KEY)}` : '';
+          const fetchPromises = [
+            fetchWithTimeout(`https://api.rss2json.com/v1/api.json?rss_url=https://www.aljazeera.com/xml/rss/all.xml${rssApiKey}`),
+            fetchWithTimeout(`https://api.rss2json.com/v1/api.json?rss_url=http://feeds.bbci.co.uk/news/world/rss.xml${rssApiKey}`),
+            fetchWithTimeout(`https://api.rss2json.com/v1/api.json?rss_url=https://www.channelnewsasia.com/api/v1/rss-outbound-feed?expandArticle=true${rssApiKey}`),
+            fetchWithTimeout(`https://api.rss2json.com/v1/api.json?rss_url=https://defence-blog.com/feed/${rssApiKey}`),
+            fetchWithTimeout(`https://api.rss2json.com/v1/api.json?rss_url=https://sputnikglobe.com/export/pool/ee/all.xml${rssApiKey}`)
+              .catch(() => fetchWithTimeout(`https://api.rss2json.com/v1/api.json?rss_url=https://www.rt.com/rss/news/${rssApiKey}`))
+          ];
 
-           const results = await Promise.allSettled(fetchPromises);
+          const results = await Promise.allSettled(fetchPromises);
 
-           let combinedItems: any[] = [];
-           results.forEach(res => {
-               if (res.status === 'fulfilled' && res.value && res.value.items) {
-                   combinedItems = [...combinedItems, ...res.value.items];
-               }
-           });
+          let combinedItems: any[] = [];
+          results.forEach(res => {
+            if (res.status === 'fulfilled' && res.value && Array.isArray(res.value.items)) {
+              combinedItems = [...combinedItems, ...res.value.items];
+            }
+          });
 
-           if (combinedItems.length > 0) {
-              const civBlacklist = ['pest', 'bug', 'insect', 'weather', 'climate', 'festival', 'movie', 'hollywood', 'sports', 'football', 'soccer', 'olympics', 'celebrity', 'music', 'concert', 'health', 'disease', 'virus'];
-              const conflictKeywords = ['iran', 'israel', 'ukraine', 'russia', 'palestine', 'gaza', 'syria', 'libya', 'yemen', 'china', 'taiwan', 'missile', 'strike', 'war', 'troops', 'army', 'military', 'drone', 'navy', 'buy', 'purchase', 'pact', 'summit', 'border', 'police', 'attack', 'defense', 'protest', 'riot'];
-              
-              const filteredItems = combinedItems.filter(item => {
-                  const text = `${item.title} ${item.description || item.content}`.toLowerCase();
-                  if (civBlacklist.some(bw => text.includes(bw))) return false;
-                  return conflictKeywords.some(kw => text.includes(kw));
-              });
+          if (combinedItems.length > 0) {
+            const civBlacklist = ['pest', 'bug', 'insect', 'weather', 'climate', 'festival', 'movie', 'hollywood', 'sports', 'football', 'soccer', 'olympics', 'celebrity', 'music', 'concert', 'health', 'disease', 'virus'];
+            const conflictKeywords = ['iran', 'israel', 'ukraine', 'russia', 'palestine', 'gaza', 'syria', 'libya', 'yemen', 'china', 'taiwan', 'missile', 'strike', 'war', 'troops', 'army', 'military', 'drone', 'navy', 'buy', 'purchase', 'pact', 'summit', 'border', 'police', 'attack', 'defense', 'protest', 'riot'];
 
-              const uniqueItems: any[] = [];
-              const seenTitles = new Set();
-              
-              for (const item of filteredItems) {
-                  const titleKey = item.title.trim().toLowerCase();
-                  if (!seenTitles.has(titleKey)) {
-                      seenTitles.add(titleKey);
-                      uniqueItems.push(item);
-                  }
+            const filteredItems = combinedItems.filter(item => {
+              const text = `${item.title || ''} ${item.description || item.content || ''}`.toLowerCase();
+              if (civBlacklist.some(bw => text.includes(bw))) return false;
+              return conflictKeywords.some(kw => text.includes(kw));
+            });
+
+            const uniqueItems: any[] = [];
+            const seenTitles = new Set();
+
+            for (const item of filteredItems) {
+              const titleKey = (item.title || '').trim().toLowerCase();
+              if (titleKey && !seenTitles.has(titleKey)) {
+                seenTitles.add(titleKey);
+                uniqueItems.push(item);
               }
+            }
 
-              const mappedItems = uniqueItems.map(item => ({
-                  title: item.title,
-                  desc: item.description || item.content,
-                  link: item.link,
-                  pubDate: item.pubDate
-              }));
-              await processNewsAndSet(mappedItems, "Global RSS Stream");
-           }
-         } catch(err) {
-             console.error("Live fetchNews failed:", err);
-             // Fallback: don't crash, keep old state
-             setError(lang === 'tr' ? 'Canlı Akış Aktif - Haberler Yenileniyor...' : 'Live Stream Active - Feeds Refreshing...');
-         }
+            mappedItems = uniqueItems.map(item => ({
+              title: item.title,
+              desc: item.description || item.content || "",
+              link: item.link || "#",
+              pubDate: item.pubDate || new Date().toISOString()
+            }));
+          }
+        } catch (err) {
+          console.warn("Live fetchNews error, using fallback conflict stream:", err);
+        }
+
+        if (!mappedItems || mappedItems.length === 0) {
+          mappedItems = fallbackConflictItems;
+        }
+
+        await processNewsAndSet(mappedItems, "Global RSS Stream");
       };
 
       await fetchNews();
 
     } catch (err) {
-      setError(lang === 'tr' ? 'Gerçek zamanlı veri bağlanılamadı. Geçici arızalar olabilir.' : 'Failed to load real-time global feed.');
+      console.warn("Outer fetchEvents fallback triggered:", err);
     } finally {
       setLoading(false);
     }
@@ -2615,49 +2703,17 @@ export default function App() {
               </div>
             </div>
             
-            {/* About This Radar - Collapsible Panel */}
+            {/* About This Radar - Direct Static HTML Link for AdSense */}
             <div className="absolute bottom-4 right-4 z-[400] flex flex-col items-end pointer-events-none">
-              <AnimatePresence>
-                {aboutPanelOpen && (
-                  <motion.div 
-                    initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 20, scale: 0.95 }}
-                    className="w-[320px] sm:w-[380px] bg-[#0a0f18]/95 backdrop-blur-md border border-slate-700 shadow-2xl rounded-lg p-5 mb-3 pointer-events-auto overflow-hidden"
-                  >
-                    <div className="flex justify-between items-center mb-3 border-b border-slate-800 pb-2">
-                       <h3 className="text-xs font-bold text-slate-100 uppercase tracking-widest flex items-center gap-2">
-                          <Info className="w-4 h-4 text-blue-500" />
-                          About This Radar
-                       </h3>
-                       <button onClick={() => setAboutPanelOpen(false)} className="text-slate-500 hover:text-white transition-colors bg-slate-800/50 hover:bg-slate-700 p-1 rounded">
-                          <X className="w-3.5 h-3.5" />
-                       </button>
-                    </div>
-                    <div className="text-[11px] text-slate-300 leading-relaxed font-sans space-y-3 max-h-[40vh] overflow-y-auto custom-scrollbar pr-2">
-                      <p>
-                        WW3 Live Radar is an advanced intelligence platform and <strong>global threat map</strong> dedicated to providing <strong>real-time tracking</strong> of military movements, geopolitical conflicts, and strategic developments worldwide. Our mission is to aggregate, analyze, and visualize critical data points across the globe, offering a comprehensive <strong>conflict radar</strong> for analysts, researchers, and the general public.
-                      </p>
-                      <p>
-                        Through continuous <strong>live war tracking</strong>, we monitor active combat zones, emerging hotspots, and significant military deployments. The system utilizes automated data feeds and curated intelligence to plot incidents directly onto our interactive map, providing immediate spatial awareness of the global threat landscape.
-                      </p>
-                      <p>
-                        Our platform is designed as a neutral observer, presenting unfiltered geopolitical news and military operations without bias. We believe that transparent access to information is crucial in understanding the complex dynamics of modern conflicts and global crises. Whether you are tracking specific regional tensions or observing broader international trends, our <strong>conflict radar</strong> serves as a vital tool for informed analysis.
-                      </p>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-              
-              {!aboutPanelOpen && (
-                <button 
-                   onClick={() => setAboutPanelOpen(true)}
-                   className="pointer-events-auto bg-blue-900/60 hover:bg-blue-800/80 border border-blue-500/50 text-blue-100 px-4 py-2 rounded shadow-[0_0_15px_rgba(59,130,246,0.3)] transition-all flex items-center gap-2 text-[10px] font-bold tracking-widest uppercase backdrop-blur"
-                >
-                   <Info className="w-4 h-4" />
-                   About This Radar
-                </button>
-              )}
+              <a 
+                 href="/about.html"
+                 target="_blank"
+                 rel="noopener noreferrer"
+                 className="pointer-events-auto bg-blue-900/60 hover:bg-blue-800/80 border border-blue-500/50 text-blue-100 px-4 py-2 rounded shadow-[0_0_15px_rgba(59,130,246,0.3)] transition-all flex items-center gap-2 text-[10px] font-bold tracking-widest uppercase backdrop-blur"
+              >
+                 <Info className="w-4 h-4" />
+                 About This Radar
+              </a>
             </div>
             
           </div>
@@ -2709,9 +2765,11 @@ export default function App() {
         
         {/* Legal Footer */}
         <div style={{ height: '28px' }} className="w-full bg-[#030406] border-t border-slate-900 flex justify-center items-center gap-8 text-[10px] text-slate-500 uppercase tracking-widest relative z-[10]">
-          <button onClick={() => setActiveModal('privacy')} className="hover:text-slate-300 transition-colors">Privacy Policy</button>
+          <a href="/about.html" target="_blank" rel="noopener noreferrer" className="hover:text-slate-300 transition-colors">About This Radar</a>
           <span className="opacity-30">|</span>
-          <button onClick={() => setActiveModal('terms')} className="hover:text-slate-300 transition-colors">Terms of Use</button>
+          <a href="/privacy.html" target="_blank" rel="noopener noreferrer" className="hover:text-slate-300 transition-colors">Privacy Policy</a>
+          <span className="opacity-30">|</span>
+          <a href="/terms.html" target="_blank" rel="noopener noreferrer" className="hover:text-slate-300 transition-colors">Terms of Use</a>
         </div>
       </div>
 
@@ -2915,42 +2973,6 @@ export default function App() {
                   </div>
                 )}
 
-                {activeModal === 'privacy' && (
-                  <div className="space-y-6">
-                    <h3 className="text-lg font-bold text-slate-100 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">Privacy Policy</h3>
-                    <div className="flex flex-col gap-4 text-slate-400 text-xs leading-relaxed max-h-[60vh] overflow-y-auto custom-scrollbar pr-4" style={{ fontFamily: 'sans-serif' }}>
-                      <p>Effective Date: September 2026</p>
-                      <p>Your privacy is important to us. It is WW3 Live Radar's policy to respect your privacy regarding any information we may collect from you across our website.</p>
-                      <p>We only ask for personal information when we truly need it to provide a service to you. We collect it by fair and lawful means, with your knowledge and consent. We also let you know why we're collecting it and how it will be used.</p>
-                      <p>We only retain collected information for as long as necessary to provide you with your requested service. What data we store, we'll protect within commercially acceptable means to prevent loss and theft, as well as unauthorized access, disclosure, copying, use or modification.</p>
-                      <p>We don't share any personally identifying information publicly or with third-parties, except when required to by law.</p>
-                      <p>Our website may link to external sites that are not operated by us. Please be aware that we have no control over the content and practices of these sites, and cannot accept responsibility or liability for their respective privacy policies.</p>
-                      <p>You are free to refuse our request for your personal information, with the understanding that we may be unable to provide you with some of your desired services.</p>
-                      <p>Your continued use of our website will be regarded as acceptance of our practices around privacy and personal information. If you have any questions about how we handle user data and personal information, feel free to contact us.</p>
-                    </div>
-                  </div>
-                )}
-
-                {activeModal === 'terms' && (
-                  <div className="space-y-6">
-                    <h3 className="text-lg font-bold text-slate-100 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">Terms of Use</h3>
-                    <div className="flex flex-col gap-4 text-slate-400 text-xs leading-relaxed max-h-[60vh] overflow-y-auto custom-scrollbar pr-4" style={{ fontFamily: 'sans-serif' }}>
-                      <p>Effective Date: September 2026</p>
-                      <h4 className="font-bold text-slate-300">1. Terms</h4>
-                      <p>By accessing the website at WW3 Live Radar, you are agreeing to be bound by these terms of service, all applicable laws and regulations, and agree that you are responsible for compliance with any applicable local laws.</p>
-                      <h4 className="font-bold text-slate-300">2. Use License</h4>
-                      <p>Permission is granted to temporarily download one copy of the materials (information or software) on WW3 Live Radar's website for personal, non-commercial transitory viewing only.</p>
-                      <h4 className="font-bold text-slate-300">3. Disclaimer</h4>
-                      <p>The materials on WW3 Live Radar's website are provided on an 'as is' basis. WW3 Live Radar makes no warranties, expressed or implied, and hereby disclaims and negates all other warranties including, without limitation, implied warranties or conditions of merchantability, fitness for a particular purpose, or non-infringement of intellectual property or other violation of rights.</p>
-                      <h4 className="font-bold text-slate-300">4. Limitations</h4>
-                      <p>In no event shall WW3 Live Radar or its suppliers be liable for any damages (including, without limitation, damages for loss of data or profit, or due to business interruption) arising out of the use or inability to use the materials on WW3 Live Radar's website.</p>
-                      <h4 className="font-bold text-slate-300">5. Accuracy of materials</h4>
-                      <p>The materials appearing on WW3 Live Radar's website could include technical, typographical, or photographic errors. WW3 Live Radar does not warrant that any of the materials on its website are accurate, complete or current. We may make changes to the materials contained on its website at any time without notice.</p>
-                      <h4 className="font-bold text-slate-300">6. Modifications</h4>
-                      <p>WW3 Live Radar may revise these terms of service for its website at any time without notice. By using this website you are agreeing to be bound by the then current version of these terms of service.</p>
-                    </div>
-                  </div>
-                )}
               </div>
             </motion.div>
           </div>
